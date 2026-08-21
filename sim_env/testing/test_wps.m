@@ -16,7 +16,7 @@ clear; close all; clc;
 
 %% Configuration
 
-n_trials = 25;
+n_trials = 1000;
 N        = 10;          % perms(1:N) allocates N!-by-N doubles - see note below
 x0       = [0, 0];
 
