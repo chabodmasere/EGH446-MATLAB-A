@@ -29,6 +29,7 @@ classdef bh_ddr_arena_CLS
         N             = 0;
         TAG_AX        = 'TAG_AX_DDR_ARENA';
         path_linspec  = '--r';
+        fixed_lims = [-100 100 -100 100];   % arena bounds;
     end
     
     properties
