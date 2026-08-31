@@ -1,5 +1,5 @@
 %% close previously open model
-close_system('sl_groundvehicleDynamics',0);
+close_system('sl_groundvehicleDynamics_combined_tunning_kalman',0);
  
 
 
@@ -14,7 +14,7 @@ startMobileRoboticsSimulationToolbox;
 cd(homedir);
 
 %% open current model
-open_system('sl_groundvehicleDynamics'); % ground robot model
+open_system('sl_groundvehicleDynamics_combined_tunning_kalman'); % ground robot model
 
 cd(homedir);
 
