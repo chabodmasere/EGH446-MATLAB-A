@@ -16,7 +16,7 @@ cd(homedir);
 
 %% open current model
 open_system('sl_groundvehicleDynamics'); % ground robot model
-set_param('sl_groundvehicleDynamics', 'StopFcn', 'plot_ekf_results(); plot_kf_constant();');
+set_param('sl_groundvehicleDynamics', 'StopFcn', 'plot_ekf_results(); param_estimation_constant();')
 cd(homedir);
 
 
