@@ -91,8 +91,8 @@ function plot_arena(OBJ, hax)
     zmin = min(OBJ.marker_Z_col) - 3*OBJ.marker_radius;
     zmax = max(OBJ.marker_Z_col) + 3*OBJ.marker_radius;
     
-    xlim(hax,[xmin,xmax]);
-    ylim(hax,[ymin,ymax]);
+    xlim(hax,[-100,100]);
+    ylim(hax,[-100,100]);
     zlim(hax,[zmin,zmax]);
     
     hL(1) = light('Position',[xmin, ymin, zmax]);   
