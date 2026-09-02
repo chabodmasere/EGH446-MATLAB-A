@@ -10,16 +10,16 @@ function controller_params()
 K_theta = 1;
 
 % Distance-based speed gain
-K_dist = 1;
+K_dist = 0.75;
 
 % Maximum forward velocity [m/s]
-v_max = 2;
+v_max = 2.5;
 
 % Maximum yaw rate [rad/s]
-omega_max = pi/2;
+omega_max = (2*pi)/5;
 
 % Min heading speed for above 90 degree turns
-heading_speed_min = 0.15;
+heading_speed_min = 0.1;
 
 %% Export parameters to base workspace
 assignin('base', 'K_theta', K_theta);
