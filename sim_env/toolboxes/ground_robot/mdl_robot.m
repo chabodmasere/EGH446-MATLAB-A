@@ -14,6 +14,7 @@
 % - SI units are used.
 %
 
+disp('mdl_robot executed - generating new waypoints')
 
 robot.X = 0;                  
 robot.Y = 0;                   

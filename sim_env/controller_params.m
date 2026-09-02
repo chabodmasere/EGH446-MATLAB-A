@@ -13,7 +13,7 @@ K_theta = 1;
 K_dist = 0.75;
 
 % Maximum forward velocity [m/s]
-v_max = 2.5;
+v_max = 3.5;
 
 % Maximum yaw rate [rad/s]
 omega_max = (2*pi)/5;
@@ -24,6 +24,9 @@ heading_speed_min = 0.1;
 % RVWP guidance
 rvwp_lookahead = 5.0;
 
+% capture Radius
+capture_radius = 1.5;
+
 %% Export parameters to base workspace
 assignin('base', 'K_theta', K_theta);
 assignin('base', 'K_dist', K_dist);
@@ -31,5 +34,6 @@ assignin('base', 'v_max', v_max);
 assignin('base', 'omega_max', omega_max);
 assignin('base','heading_speed_min',heading_speed_min);
 assignin('base','rvwp_lookahead',rvwp_lookahead);
+assignin('base','capture_radius',capture_radius);
 
 end
