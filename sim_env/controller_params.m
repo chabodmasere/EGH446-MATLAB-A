@@ -21,11 +21,15 @@ omega_max = (2*pi)/5;
 % Min heading speed for above 90 degree turns
 heading_speed_min = 0.1;
 
+% RVWP guidance
+rvwp_lookahead = 5.0;
+
 %% Export parameters to base workspace
 assignin('base', 'K_theta', K_theta);
 assignin('base', 'K_dist', K_dist);
 assignin('base', 'v_max', v_max);
 assignin('base', 'omega_max', omega_max);
 assignin('base','heading_speed_min',heading_speed_min);
+assignin('base','rvwp_lookahead',rvwp_lookahead);
 
 end
