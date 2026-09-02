@@ -1,8 +1,18 @@
 function stats = plot_ekf_results(src, opts)
+% PLOT_EKF_RESULTS  Console metrics and diagnostic figures for the estimator.
+%
+% Usage
+%   plot_ekf_results               metrics + all figures (saved as PNG)
+%   plot_ekf_results(Plots=false)  metrics only, no figure windows
+%   stats = plot_ekf_results(out)  read logs from a sim output object
+%
+% Works for any state dimension: 5 (EKF, [x y th v w]) or
+% 7 (linear KF, [x y th v w vx vy]). State labels adapt automatically.
 
 arguments
     src = []
     opts.dt      (1,1) double  = 0.01
+    opts.Plots   (1,1) logical = true
     opts.Save    (1,1) logical = true
     opts.SaveDir (1,:) char    = fullfile(fileparts(mfilename('fullpath')), 'figures')
     opts.Prefix  (1,:) char    = 'partB'
@@ -35,8 +45,11 @@ innov = align(innov, t_i, t);
 K     = align3(K, t_K, t);
 P     = align3(P, t_P, t);
 
-N = numel(t);
-k = (1:N)';
+N  = numel(t);
+k  = (1:N)';
+ns = size(P, 1);                          % state dimension: 5 (EKF) or 7 (LKF)
+state_names = {'x','y','\theta','v','\omega','v_x','v_y'};
+state_names = state_names(1:min(ns, numel(state_names)));
 
 if abs(numel(t_p) - N) > 1
     fprintf(['Note: pose_log had %d samples but xhat_log had %d. They were ', ...
@@ -56,21 +69,34 @@ err_sq        = err.^2;
 rmse_est  = sqrt(mean(err.^2));
 rmse_meas = sqrt(mean(meas_err.^2));
 
+% Filter's own 1-sigma for the pose states, averaged after the transient
+Pd = zeros(N, ns);
+for i = 1:ns, Pd(:,i) = squeeze(P(i,i,:)); end
+k0        = min(500, N);
+sigma_P   = sqrt(mean(Pd(k0:end,1:3)));
+consist   = rmse_est ./ sigma_P;          % ~1 for an honest filter
+
 fprintf('              x         y        theta\n');
 fprintf('RMSE raw    %8.4f  %8.4f  %8.4f\n', rmse_meas);
-fprintf('RMSE EKF    %8.4f  %8.4f  %8.4f\n', rmse_est);
+fprintf('RMSE est    %8.4f  %8.4f  %8.4f\n', rmse_est);
 fprintf('Improvement %8.2fx %8.2fx %8.2fx\n', rmse_meas ./ rmse_est);
+fprintf('sqrt(P_ii)  %8.4f  %8.4f  %8.4f   (filter''s own 1-sigma)\n', sigma_P);
+fprintf('RMSE/sqrtP  %8.2f  %8.2f  %8.2f   (consistency: ~1 honest, >1.5 over-confident)\n', consist);
 fprintf('\nSteady-state covariance P (last step):\n');  disp(P(:,:,end));
 fprintf('Steady-state Kalman gain K (last step):\n');   disp(K(:,:,end));
 fprintf('Innovation variance (should be near R + H P H''):\n'); disp(var(innov));
 
 stats = struct('t', t, 'err', err, 'meas_err', meas_err, ...
                'rmse_est', rmse_est, 'rmse_meas', rmse_meas, ...
+               'sigma_P', sigma_P, 'consistency', consist, ...
                'P_ss', P(:,:,end), 'K_ss', K(:,:,end), 'innov_var', var(innov));
+
+%% ---------------- Figures (skipped when Plots=false) ----------------
+if opts.Plots
 
 newfig = @(name) figure('Name', name, 'Tag', tag);
 
-%% ---------------- Fig 1: states against k ----------------
+% ---------------- Fig 1: states against k ----------------
 labels = {'x  [m]', 'y  [m]', '\theta  [rad]'};
 newfig('State estimates vs k');
 pose_p = pose;  z_p = z;
@@ -81,12 +107,12 @@ for i = 1:3
     plot(k, pose_p(:,i), 'r-', 'LineWidth', 1.4);
     plot(k, xhat(:,i), 'b-', 'LineWidth', 1.0);
     ylabel(labels{i}); grid on;
-    if i == 1, title('Measured data, true state (red) and EKF estimate (blue)'); end
+    if i == 1, title('Measured data, true state (red) and estimate (blue)'); end
     if i == 3, ylabel('\theta  [rad, wrapped]'); xlabel('k'); end
 end
 legend('measured', 'true', 'estimate', 'Location', 'best');
 
-%% ---------------- Fig 2: x-y trajectory ----------------
+% ---------------- Fig 2: x-y trajectory ----------------
 newfig('x-y trajectory');
 plot(z(:,1), z(:,2), '.', 'Color', [0.75 0.75 0.75], 'MarkerSize', 3); hold on;
 plot(pose(:,1), pose(:,2), 'r-', 'LineWidth', 2);
@@ -96,7 +122,7 @@ xlabel('x  [m]'); ylabel('y  [m]');
 title('Vehicle path: measured (grey), true (red), estimated (blue)');
 legend('measured', 'true', 'estimate', 'Location', 'best');
 
-%% ---------------- Fig 3: error and error squared ----------------
+% ---------------- Fig 3: error and error squared ----------------
 newfig('Estimation error');
 subplot(2,1,1);
 plot(k, err(:,1), 'b-', k, err(:,2), 'c-', k, err(:,3), 'm-'); grid on;
@@ -105,63 +131,91 @@ legend('x', 'y', '\theta', 'Location', 'best');
 subplot(2,1,2);
 semilogy(k, err_sq(:,1), 'b-', k, err_sq(:,2), 'c-', k, err_sq(:,3), 'm-'); grid on;
 xlabel('k'); ylabel('error^2'); title('Estimate error squared');
+ylim([1e-5 1]);   % zero-crossings otherwise stretch the axis to 1e-15
 
-newfig('EKF vs raw sensor');
+newfig('Estimator vs raw sensor');
 subplot(2,1,1);
 plot(k, meas_err(:,1), '-', 'Color', [0.7 0.7 0.7]); hold on;
 plot(k, err(:,1), 'b-'); grid on;
-ylabel('x error [m]'); title('Raw measurement error (grey) vs EKF error (blue)');
+ylabel('x error [m]'); title('Raw measurement error (grey) vs estimator error (blue)');
 subplot(2,1,2);
 plot(k, meas_err(:,3), '-', 'Color', [0.7 0.7 0.7]); hold on;
 plot(k, err(:,3), 'b-'); grid on;
 xlabel('k'); ylabel('\theta error [rad]');
 
-%% ---------------- Fig 4: Kalman gain ----------------
+% ---------------- Fig 3b: consistency envelope ----------------
+% If P is honest, ~95% of the error samples fall inside +/- 2 sqrt(P_ii).
+newfig('Consistency envelope');
+enames = {'x error [m]', 'y error [m]', '\theta error [rad]'};
+for i = 1:3
+    subplot(3,1,i);
+    b = 2*sqrt(Pd(:,i));
+    fill([k; flipud(k)], [b; -flipud(b)], [0.85 0.9 1], 'EdgeColor', 'none'); hold on;
+    plot(k, err(:,i), 'b-', 'LineWidth', 0.6); grid on;
+    inside = 100*mean(abs(err(k0:end,i)) <= b(k0:end));
+    ylabel(enames{i});
+    title(sprintf('%s: %.1f%% of samples inside \\pm2\\sigma  (target 95%%),  RMSE/\\sigma_P = %.2f', ...
+                  strtok(enames{i}), inside, consist(i)));
+    if i == 3, xlabel('k'); end
+end
+legend('\pm 2\sigma from P', 'error', 'Location', 'best');
+
+% ---------------- Fig 4: Kalman gain ----------------
 kz = min(300, N);
 newfig('Kalman gain');
 subplot(3,1,1);
 plot(k, squeeze(K(1,1,:)), 'b-', k, squeeze(K(2,2,:)), 'c-', ...
      k, squeeze(K(3,3,:)), 'm-', k, squeeze(K(4,4,:)), 'g-'); grid on;
-ylabel('gain'); title('Diagonal Kalman gains, full run: converge to steady state and stay there');
+ylabel('gain'); title('Diagonal Kalman gains, full run (K_{x,x} lies under K_{y,y}: symmetric model)');
 legend('K_{x,x}', 'K_{y,y}', 'K_{\theta,\theta}', 'K_{v,v}', 'Location', 'best');
 subplot(3,1,2);
 plot(k(1:kz), squeeze(K(1,1,1:kz)), 'b-', k(1:kz), squeeze(K(2,2,1:kz)), 'c-', ...
      k(1:kz), squeeze(K(3,3,1:kz)), 'm-', k(1:kz), squeeze(K(4,4,1:kz)), 'g-'); grid on;
 ylabel('gain'); title(sprintf('Same gains, first %d steps: large while P is large, then settle', kz));
 subplot(3,1,3);
-plot(k(1:kz), squeeze(K(5,3,1:kz)), 'm-', k(1:kz), squeeze(K(1,3,1:kz)), 'b-'); grid on;
+if ns >= 7
+    % Linear KF: heading -> omega, and position -> Cartesian velocity
+    plot(k(1:kz), squeeze(K(5,3,1:kz)), 'm-', k(1:kz), squeeze(K(6,1,1:kz)), 'b-'); grid on;
+    legend('K_{\omega,\theta}', 'K_{v_x,x}', 'Location', 'best');
+    title('Cross gains, first steps: \theta meas \rightarrow \omega,  x meas \rightarrow v_x');
+else
+    % EKF: heading -> omega and heading -> x (via unicycle coupling)
+    plot(k(1:kz), squeeze(K(5,3,1:kz)), 'm-', k(1:kz), squeeze(K(1,3,1:kz)), 'b-'); grid on;
+    legend('K_{\omega,\theta}', 'K_{x,\theta}', 'Location', 'best');
+    title('Cross gains, first steps: heading measurement \rightarrow \omega and x');
+end
 xlabel('k'); ylabel('gain');
-title('Cross gains, first steps: heading measurement -> \omega and x');
-legend('K_{\omega,\theta}', 'K_{x,\theta}', 'Location', 'best');
 
-%% ---------------- Fig 5: covariance ----------------
+% ---------------- Fig 5: covariance ----------------
 newfig('Error covariance');
-Pd = zeros(N,5);
-for i = 1:5, Pd(:,i) = squeeze(P(i,i,:)); end
 subplot(2,1,1);
 semilogy(k, Pd, 'LineWidth', 1.1); grid on;
-ylabel('P_{ii}'); title('Diagonal of P, full run: filter''s own variance for each state');
-legend('x', 'y', '\theta', 'v', '\omega', 'Location', 'best');
+ylabel('P_{ii}'); title('Diagonal of P, full run (P_{xx} lies under P_{yy}: symmetric model)');
+legend(state_names, 'Location', 'best');
 subplot(2,1,2);
 semilogy(k(1:kz), Pd(1:kz,:), 'LineWidth', 1.1); grid on;
 xlabel('k'); ylabel('P_{ii}');
 title(sprintf('First %d steps: uncertainty collapses from the initial guess to steady state', kz));
 
 newfig('Steady-state covariance');
-imagesc(P(:,:,end)); colorbar; axis square;
-set(gca, 'XTick', 1:5, 'YTick', 1:5, ...
-    'XTickLabel', {'x','y','\theta','v','\omega'}, ...
-    'YTickLabel', {'x','y','\theta','v','\omega'});
-title('Full-state covariance matrix P at final step');
+Pf = P(:,:,end);
+d  = sqrt(diag(Pf));
+C  = Pf ./ (d*d');                 % correlation matrix, diagonal = 1
+imagesc(C); caxis([-1 1]); colorbar; axis square;
+set(gca, 'XTick', 1:ns, 'YTick', 1:ns, ...
+    'XTickLabel', state_names, 'YTickLabel', state_names);
+title('State correlation matrix at final step (P_{ij} / sqrt(P_{ii} P_{jj}))');
 
-%% ---------------- Fig 6: innovation ----------------
+% ---------------- Fig 6: innovation ----------------
 newfig('Innovation');
 inames = {'x', 'y', '\theta', 'v'};
+ki = min(50, N);                    % skip start-up transient
 for i = 1:4
     subplot(2,2,i);
-    histogram(innov(:,i), 40, 'Normalization', 'pdf', 'FaceColor', [0.6 0.7 0.9]); hold on;
-    s  = std(innov(:,i));
-    xx = linspace(min(innov(:,i)), max(innov(:,i)), 200);
+    iv = innov(ki:end, i);
+    histogram(iv, 40, 'Normalization', 'pdf', 'FaceColor', [0.6 0.7 0.9]); hold on;
+    s  = std(iv);
+    xx = linspace(min(iv), max(iv), 200);
     plot(xx, exp(-xx.^2/(2*s^2))/(s*sqrt(2*pi)), 'r-', 'LineWidth', 1.4);
     grid on; title(sprintf('innovation %s: var = %.4f', inames{i}, s^2));
 end
@@ -171,10 +225,12 @@ end
 
 drawnow;
 
-%% ---------------- Save every tagged figure as PNG ----------------
+% ---------------- Save every tagged figure as PNG ----------------
 if opts.Save
     save_tagged_figures(opts.SaveDir, opts.Prefix, tag);
 end
+
+end   % if opts.Plots
 
 end   % plot_ekf_results
 

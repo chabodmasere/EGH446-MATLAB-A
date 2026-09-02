@@ -1,4 +1,10 @@
 function res = param_estimation_constant(opts)
+% PARAM_ESTIMATION_CONSTANT  Scalar KF estimating a constant from noisy data.
+%
+% Usage
+%   param_estimation_constant                 metrics + figures (saved as PNG)
+%   param_estimation_constant(Plots=false)    metrics only, no figure windows
+%   res = param_estimation_constant(R_filter=0.2)   deliberate R mismatch
 
 arguments
     opts.c_true   (1,1) double  = 3.7     % the unknown constant
@@ -9,6 +15,7 @@ arguments
     opts.c0       (1,1) double  = 0       % initial guess (deliberately wrong)
     opts.P0       (1,1) double  = 10      % initial uncertainty
     opts.R_filter (1,1) double  = NaN     % variance the FILTER is told; NaN = truth
+    opts.Plots    (1,1) logical = true
     opts.Save     (1,1) logical = true
     opts.SaveDir  (1,:) char    = fullfile(fileparts(mfilename('fullpath')), 'figures')
     opts.Prefix   (1,:) char    = 'partA'
@@ -82,7 +89,9 @@ res = struct('k', 1:N, 'Z', Z, 'c_hat', c_hat, 'P', P, 'K', Kg, ...
              'err_sq', err_sq, 'resid', resid, 'c_true', c_true, ...
              'R_true', R_true, 'R_filter', R_filt, 'running_mean', running_mean);
 
-%% ---------------- Plots ----------------
+%% ---------------- Plots (skipped when Plots=false) ----------------
+if opts.Plots
+
 k = 1:N;
 newfig = @(name) figure('Name', name, 'Tag', tag);
 
@@ -144,6 +153,8 @@ drawnow;
 if opts.Save
     save_tagged_figures(opts.SaveDir, opts.Prefix, tag);
 end
+
+end   % if opts.Plots
 
 end   % param_estimation_constant
 
