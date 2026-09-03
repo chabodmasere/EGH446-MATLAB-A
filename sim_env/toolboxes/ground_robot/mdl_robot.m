@@ -32,16 +32,16 @@ no_wps = 10;
 
 %% Random start position and heading
 
-%robot.X = randi([coord_lo, coord_hi]);
-%robot.Y = randi([coord_lo, coord_hi]);
+robot.X = randi([coord_lo, coord_hi]);
+robot.Y = randi([coord_lo, coord_hi]);
 
 % Random heading from -pi to pi
-%robot.Theta = -pi + 2*pi*rand();
+robot.Theta = -pi + 2*pi*rand();
 
 %% Fixed start for controlled testing
-robot.X = 0;
-robot.Y = 0;
-robot.Theta = 0;
+%robot.X = 0;
+%robot.Y = 0;
+%robot.Theta = 0;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Mission Planner
