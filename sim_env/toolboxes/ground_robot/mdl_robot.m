@@ -39,9 +39,9 @@ robot.Y = randi([coord_lo, coord_hi]);
 robot.Theta = -pi + 2*pi*rand();
 
 %% Fixed start for controlled testing
-% robot.X = 0;
-% robot.Y = 0;
-% robot.Theta = 0;
+%robot.X = 0;
+%robot.Y = 0;
+%robot.Theta = 0;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Mission Planner
