@@ -27,6 +27,11 @@ rvwp_lookahead = 5.0;
 % capture Radius
 capture_radius = 1.5;
 
+% Heading PID controller
+%K_i = 0;
+%K_d = 0.05;
+%N_d = 5;
+
 %% Export parameters to base workspace
 assignin('base', 'K_theta', K_theta);
 assignin('base', 'K_dist', K_dist);
@@ -35,5 +40,8 @@ assignin('base', 'omega_max', omega_max);
 assignin('base','heading_speed_min',heading_speed_min);
 assignin('base','rvwp_lookahead',rvwp_lookahead);
 assignin('base','capture_radius',capture_radius);
+%assignin('base','K_i',K_i);
+%assignin('base','K_d',K_d);
+%assignin('base','N_d',N_d);
 
 end
