@@ -4,7 +4,8 @@ function res = param_estimation_constant(opts)
 % Usage
 %   param_estimation_constant                 metrics + figures (saved as PNG)
 %   param_estimation_constant(Plots=false)    metrics only, no figure windows
-%   res = param_estimation_constant(R_filter=0.2)   deliberate R mismatch
+%   res = param_estimation_constant(R_filter=0.1)   deliberate R mismatch
+%   param_estimation_constant(P0=1e9)         diffuse prior -> exact running mean
 
 arguments
     opts.c_true   (1,1) double  = 3.7     % the unknown constant
@@ -24,6 +25,7 @@ end
 c_true = opts.c_true;  sigma = opts.sigma;  N = opts.N;  m = opts.m;
 R_true = sigma^2;
 if isnan(opts.R_filter), R_filt = R_true; else, R_filt = opts.R_filter; end
+mismatch = (R_filt ~= R_true);
 
 tag = 'kf_partA';
 set(0, 'DefaultFigureColor', 'w');
@@ -40,9 +42,12 @@ Z = H * c_true + e;                     % m x N measurement sequence
 %% ---------------- Kalman filter (recursive) ----------------
 % State is the scalar c. A = 1, B = 0, Q = 0 (a true constant has no
 % process noise). Only the update step does any work.
-c_hat = zeros(1, N);
-P     = zeros(1, N);
-Kg    = zeros(m, N);
+c_hat   = zeros(1, N);
+P       = zeros(1, N);
+Kg      = zeros(m, N);
+innov   = zeros(m, N);      % innovation  z_k - H*c_pred  (pre-update)
+nu_norm = zeros(m, N);      % innovation normalised by sqrt(S) -> should be N(0,1)
+S11     = zeros(1, N);      % innovation variance (per component, all equal here)
 
 c_prev = opts.c0;
 P_prev = opts.P0;
@@ -53,41 +58,65 @@ for k = 1:N
     P_pred = P_prev;                        % A*P*A' + Q, Q = 0
 
     % Innovation and its covariance
-    innov = Z(:,k) - H * c_pred;            % m x 1
-    S     = H * P_pred * H' + R;            % m x m
+    nu = Z(:,k) - H * c_pred;               % m x 1, uses the PREDICTION
+    S  = H * P_pred * H' + R;               % m x m
 
     % Gain: how much of the innovation to believe
     K = P_pred * H' / S;                    % 1 x m
 
     % Update
-    c_prev = c_pred + K * innov;
-    P_prev = (1 - K * H) * P_pred;
+    c_prev = c_pred + K * nu;
+    P_prev = (1 - K * H) * P_prev;
 
-    c_hat(k) = c_prev;
-    P(k)     = P_prev;
-    Kg(:,k)  = K';
+    c_hat(k)     = c_prev;
+    P(k)         = P_prev;
+    Kg(:,k)      = K';
+    innov(:,k)   = nu;
+    S11(k)       = S(1,1);
+    nu_norm(:,k) = chol(S, 'lower') \ nu;   % whitened: ~N(0, I) if model is right
 end
 
 %% ---------------- Diagnostics ----------------
 err_sq  = (c_hat - c_true).^2;
-resid   = Z - H * c_hat;                    % observed noise, m x N
+resid   = Z - H * c_hat;                    % posterior residuals (post-update)
 resid_v = resid(:);
-running_mean = cumsum(mean(Z,1)) ./ (1:N);  % KF for a constant = running mean
+nu_v    = nu_norm(:);
+running_mean = cumsum(mean(Z,1)) ./ (1:N);  % KF for a constant ~ running mean
+
+% Closed-form claimed covariance: information adds, 1/P_N = 1/P0 + mN/R
+P_theory = 1 / (1/opts.P0 + m*N/R_filt);
+
+% Consistency: actual error vs the filter's own 1-sigma claim
+consistency = abs(c_hat(end) - c_true) / sqrt(P(end));
+
+% Standard error of the residual mean (what "close to 0" means quantitatively)
+se_mean = sigma / sqrt(m*N);
 
 fprintf('True constant           c     = %.4f\n', c_true);
 fprintf('Final estimate          c_hat = %.4f\n', c_hat(end));
-fprintf('Final covariance        P_N   = %.4e\n', P(end));
+fprintf('Final covariance        P_N   = %.4e   (closed form 1/(1/P0+mN/R) = %.4e)\n', ...
+        P(end), P_theory);
+fprintf('Consistency |err|/sqrt(P_N)   = %.2f   (~1 is healthy; >>1 overconfident)\n', ...
+        consistency);
 fprintf('Noise variance (truth)  R     = %.4f\n', R_true);
-if R_filt ~= R_true
+if mismatch
     fprintf('Noise variance (filter) R     = %.4g   <-- mismatch on purpose\n', R_filt);
 end
-fprintf('Sample variance of residuals  = %.4f   (should be close to R)\n', var(resid_v));
-fprintf('Sample mean of residuals      = %.4f   (should be close to 0)\n', mean(resid_v));
-fprintf('Max |KF estimate - running mean| = %.2e\n', max(abs(c_hat - running_mean)));
+fprintf('Sample variance of residuals  = %.4f   (should be close to R = %.2f)\n', ...
+        var(resid_v), R_true);
+fprintf('Sample mean of residuals      = %.4f   (std error of this mean = %.4f)\n', ...
+        mean(resid_v), se_mean);
+fprintf('Normalised innovations: mean  = %.4f, var = %.4f   (should be ~0 and ~1)\n', ...
+        mean(nu_v), var(nu_v));
+fprintf('Max |KF estimate - running mean| = %.2e   (prior''s fingerprint; -> 0 as P0 -> inf)\n', ...
+        max(abs(c_hat - running_mean)));
 
 res = struct('k', 1:N, 'Z', Z, 'c_hat', c_hat, 'P', P, 'K', Kg, ...
-             'err_sq', err_sq, 'resid', resid, 'c_true', c_true, ...
-             'R_true', R_true, 'R_filter', R_filt, 'running_mean', running_mean);
+             'err_sq', err_sq, 'resid', resid, 'innov', innov, ...
+             'nu_norm', nu_norm, 'S', S11, 'c_true', c_true, ...
+             'R_true', R_true, 'R_filter', R_filt, ...
+             'P_theory', P_theory, 'consistency', consistency, ...
+             'running_mean', running_mean);
 
 %% ---------------- Plots (skipped when Plots=false) ----------------
 if opts.Plots
@@ -113,12 +142,17 @@ title('Recursive Kalman estimate of the constant');
 legend({'measurements', 'estimate $\hat{c}_k$', 'true $c$'}, ...
        'Interpreter', 'latex', 'Location', 'best');
 
-% 3. Error squared
+% 3. Error squared vs claimed covariance (the consistency picture)
 newfig('Estimate error squared');
 semilogy(k, err_sq, 'b-', 'LineWidth', 1.2); hold on;
 semilogy(k, P, 'r--', 'LineWidth', 1.2);
 xlabel('k'); grid on;
-title('Estimate error squared vs. filter covariance');
+if mismatch
+    title({'Estimate error squared vs. filter covariance', ...
+           sprintf('filter told R = %.2g, truth R = %.2g (mismatch)', R_filt, R_true)});
+else
+    title('Estimate error squared vs. filter covariance');
+end
 legend({'$(\hat{c}_k - c)^2$', '$P_k$ (filter''s own error variance)'}, ...
        'Interpreter', 'latex', 'Location', 'best');
 
@@ -128,24 +162,27 @@ subplot(2,1,1);
 plot(k, Kg', 'b-', 'LineWidth', 1.2); grid on;
 ylabel('K_k'); title('Kalman gain - decays like 1/k for a constant');
 subplot(2,1,2);
-semilogy(k, P, 'b-', 'LineWidth', 1.2); grid on;
-xlabel('k'); ylabel('P_k'); title('Error covariance');
+semilogy(k, P, 'b-', 'LineWidth', 1.2); hold on;
+semilogy(k, P_theory * ones(1,N), 'k:', 'LineWidth', 1.0);
+xlabel('k'); ylabel('P_k'); grid on;
+title('Error covariance'); legend('P_k', 'closed-form P_N', 'Location', 'best');
 
-% 5. Observed Gaussian noise
+% 5. Innovations (the theoretically white, N(0,S) sequence)
 newfig('Observed noise');
 subplot(2,1,1);
-plot(k, resid', '.', 'Color', [0.3 0.3 0.8]); hold on;
-plot([1 N], [0 0], 'r-');
-xlabel('k'); ylabel('$z_k - \hat{c}_k$', 'Interpreter', 'latex'); grid on;
-title('Residuals (observed measurement noise)');
+plot(k, innov', '.', 'Color', [0.3 0.3 0.8]); hold on;
+plot(k,  2*sqrt(S11), 'r--', 'LineWidth', 1.0);
+plot(k, -2*sqrt(S11), 'r--', 'LineWidth', 1.0);
+xlabel('k'); ylabel('$\nu_k = z_k - \hat{c}_{k|k-1}$', 'Interpreter', 'latex');
+grid on;
+title('Innovations with \pm2\surdS_k envelope (~95% should fall inside)');
 subplot(2,1,2);
-histogram(resid_v, 30, 'Normalization', 'pdf', 'FaceColor', [0.6 0.7 0.9]); hold on;
-xx = linspace(min(resid_v), max(resid_v), 200);
-gauss = exp(-xx.^2 / (2*sigma^2)) / (sigma*sqrt(2*pi));
-plot(xx, gauss, 'r-', 'LineWidth', 1.5);
-xlabel('residual'); ylabel('pdf'); grid on;
-title(sprintf('Zero-mean Gaussian, variance = %.3f  (R = %.3f)', var(resid_v), R_true));
-legend('observed', 'N(0, R)', 'Location', 'best');
+histogram(nu_v, 30, 'Normalization', 'pdf', 'FaceColor', [0.6 0.7 0.9]); hold on;
+xx = linspace(min(nu_v), max(nu_v), 200);
+plot(xx, exp(-xx.^2/2)/sqrt(2*pi), 'r-', 'LineWidth', 1.5);
+xlabel('normalised innovation \nu_k / \surdS_k'); ylabel('pdf'); grid on;
+title(sprintf('Normalised innovations: var = %.3f  (should be 1)', var(nu_v)));
+legend('observed', 'N(0, 1)', 'Location', 'best');
 
 drawnow;
 
