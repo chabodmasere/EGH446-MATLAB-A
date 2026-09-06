@@ -26,7 +26,9 @@ function mission_analysis(src, opts)
 % logs pose_log, z_log, xhat_log, K_log, P_log, innov_log.
 %
 % Options:
-%   mission_analysis(Save=false)   show tabs only, save nothing
+%   mission_analysis(Save=false)      show tabs only, save nothing
+%   mission_analysis(Verbose=true)    also dump the raw P, K and innovation
+%                                     matrices after the summary
 
 arguments
     src = []                       % optional Simulink.SimulationOutput
@@ -34,6 +36,7 @@ arguments
     opts.Save    (1,1) logical = true
     opts.SaveDir (1,:) char = fullfile(fileparts(mfilename('fullpath')), 'images')
     opts.Prefix  (1,:) char = 'mission'
+    opts.Verbose (1,1) logical = false   % also dump raw P, K and innovation matrices
 end
 
 tag    = 'mission_analysis';
@@ -151,6 +154,15 @@ end
 %% ---------------- Mission performance ----------------
 mission_time = dist_to_wp_time(end);
 route_length = sum(vecnorm(diff(wp_plot), 2, 2));
+
+% Distance the vehicle actually drove, from the true pose history.
+if exist('poseL', 'var') && ~isempty(poseL) && size(poseL, 1) > 1
+    distance_travelled = sum(vecnorm(diff(poseL(:,1:2)), 2, 2));
+    tracking_overhead  = distance_travelled - route_length;
+else
+    distance_travelled = NaN;
+    tracking_overhead  = NaN;
+end
 
 if route_length > eps
     mission_time_per_metre = mission_time / route_length;
@@ -361,78 +373,71 @@ fprintf('\n========================================\n');
 fprintf('EGH446 Mission Performance Summary\n');
 fprintf('========================================\n');
 
-fprintf('\nMission\n-------\n');
-fprintf('Mission Time                = %.3f s\n', mission_time);
-fprintf('Planned Route Length        = %.3f m\n', route_length);
-fprintf('Mission Time per Metre      = %.4f s/m\n', mission_time_per_metre);
-fprintf('Effective Mission Speed     = %.3f m/s\n', mission_effective_speed);
-fprintf('Waypoints Captured          = %d/%d\n', ...
-    num_true_waypoints_captured, size(wp_ordered,1));
+fprintf('\nMISSION\n-------\n');
+fprintf('Mission time                = %.2f s\n', mission_time);
+fprintf('Planned route length        = %.2f m\n', route_length);
+fprintf('Distance travelled          = %.2f m\n', distance_travelled);
+fprintf('Tracking overhead           = %.2f m (%.1f%% over plan)\n', ...
+    tracking_overhead, 100*tracking_overhead/route_length);
+fprintf('Average speed               = %.2f m/s\n', mission_effective_speed);
+fprintf('Waypoints captured          = %d/%d\n', ...
+    num_waypoints_captured, size(wp_plot,1)-1);
+
+fprintf('\nHOW WELL IT FOLLOWED THE ROUTE\n');
+fprintf('------------------------------\n');
+fprintf('Mean waypoint capture error = %.3f m\n', mean_true_capture_error);
+fprintf('Max  waypoint capture error = %.3f m\n', max_true_capture_error);
+fprintf('RMS cross-track error       = %.3f m\n', rms_cross_track_error);
+fprintf('Max cross-track error       = %.3f m\n', max_cross_track_error);
+fprintf('RMS heading error           = %.2f deg\n', true_heading_error_rms);
+fprintf('Yaw rate saturated          = %.1f%% of the mission\n', ...
+    yaw_saturation_percent);
 
 if haveLKF
-    fprintf('\nLKF vs Raw Sensor (RMSE)\n');
-    fprintf('------------------------\n');
-    fprintf('              x         y        theta\n');
-    fprintf('RMSE raw    %8.4f  %8.4f  %8.4f\n', rmse_meas);
-    fprintf('RMSE LKF    %8.4f  %8.4f  %8.4f\n', rmse_est(1:3));
-    fprintf('Improvement %8.2fx %8.2fx %8.2fx\n', ...
-        rmse_meas ./ rmse_est(1:3));
-    fprintf('\nSteady-state covariance P (last step):\n'); disp(PL(:,:,end));
-    fprintf('Steady-state Kalman gain K (last step):\n');  disp(KL(:,:,end));
-    fprintf('Innovation variance (should be near R + H P H''):\n');
-    disp(var(innovL));
+    fprintf('\nHOW WELL IT KNEW WHERE IT WAS\n');
+    fprintf('-----------------------------\n');
+    fprintf('Position RMSE, filtered     = %.3f m  (raw %.3f m)\n', ...
+        estimator_rmse_position, hypot(rmse_meas(1), rmse_meas(2)));
+    fprintf('Heading RMSE, filtered      = %.2f deg\n', estimator_rmse_heading);
+    fprintf('Filter improvement          = %.1fx in x, %.1fx in y, %.1fx in theta\n', ...
+        rmse_meas(1)/rmse_est(1), rmse_meas(2)/rmse_est(2), ...
+        rmse_meas(3)/rmse_est(3));
 end
 
-fprintf('\nHeading Tracking (controller, uses x_hat)\n');
-fprintf('-----------------------------------------\n');
-fprintf('RMS Heading Error           = %.3f deg\n', heading_error_rms);
-fprintf('Mean Absolute Error         = %.3f deg\n', heading_error_mean_abs);
-fprintf('Maximum Absolute Error      = %.3f deg\n', heading_error_max_abs);
+fprintf('\nCOMMANDS\n--------\n');
+fprintf('Speed, mean / max           = %.2f / %.2f m/s\n', ...
+    mean_v_cmd, max_v_cmd);
+fprintf('Turn rate, mean / max       = %.2f / %.2f rad/s\n', ...
+    mean_abs_omega_cmd, max_omega_cmd);
 
-fprintf('\nHeading Tracking (ground truth)\n');
-fprintf('-------------------------------\n');
-fprintf('TRUE RMS Heading Error      = %.3f deg\n', true_heading_error_rms);
-fprintf('TRUE Mean Absolute Error    = %.3f deg\n', true_heading_error_mean_abs);
-fprintf('TRUE Maximum Error          = %.3f deg\n', true_heading_error_max_abs);
+%% ---------------- Detail, only on request ----------------
+if opts.Verbose
 
-fprintf('\nState Estimator Accuracy\n');
-fprintf('------------------------\n');
-fprintf('X Position RMSE             = %.3f m\n', estimator_rmse_x);
-fprintf('Y Position RMSE             = %.3f m\n', estimator_rmse_y);
-fprintf('2-D Position RMSE           = %.3f m\n', estimator_rmse_position);
-fprintf('Heading Estimate RMSE       = %.3f deg\n', estimator_rmse_heading);
+    fprintf('\nHeading tracking, controller view (uses x_hat)\n');
+    fprintf('  RMS %.3f deg | mean abs %.3f deg | max %.3f deg\n', ...
+        heading_error_rms, heading_error_mean_abs, heading_error_max_abs);
+    fprintf('Heading tracking, ground truth\n');
+    fprintf('  RMS %.3f deg | mean abs %.3f deg | max %.3f deg\n', ...
+        true_heading_error_rms, true_heading_error_mean_abs, ...
+        true_heading_error_max_abs);
 
-fprintf('\nController Commands\n-------------------\n');
-fprintf('Maximum v_cmd               = %.3f m/s\n', max_v_cmd);
-fprintf('Mean v_cmd                  = %.3f m/s\n', mean_v_cmd);
-fprintf('Maximum |omega_cmd|         = %.3f rad/s\n', max_omega_cmd);
-fprintf('Mean |omega_cmd|            = %.3f rad/s\n', mean_abs_omega_cmd);
-fprintf('Yaw Saturation Time         = %.3f s\n', yaw_saturated_time);
-fprintf('Yaw Saturation Percentage   = %.2f %%\n', yaw_saturation_percent);
+    fprintf('Estimator RMSE: x %.3f m | y %.3f m | 2-D %.3f m | theta %.3f deg\n', ...
+        estimator_rmse_x, estimator_rmse_y, estimator_rmse_position, ...
+        estimator_rmse_heading);
 
-fprintf('\nWaypoint Capture (estimated | true)\n');
-fprintf('-----------------------------------\n');
-fprintf('Average Capture Error       = %.3f m | %.3f m\n', ...
-    mean_capture_error, mean_true_capture_error);
-fprintf('Maximum Capture Error       = %.3f m | %.3f m\n', ...
-    max_capture_error, max_true_capture_error);
-fprintf('Minimum Capture Error       = %.3f m | %.3f m\n', ...
-    min_capture_error, min_true_capture_error);
+    fprintf('Capture error, estimated vs true\n');
+    fprintf('  mean %.3f | %.3f m\n', mean_capture_error, mean_true_capture_error);
+    fprintf('  max  %.3f | %.3f m\n', max_capture_error,  max_true_capture_error);
+    fprintf('  min  %.3f | %.3f m\n', min_capture_error,  min_true_capture_error);
 
-if num_true_waypoints_captured > 0
-    fprintf('\nIndividual TRUE Capture Errors\n');
-    fprintf('------------------------------\n');
-    for i = 1:num_true_waypoints_captured
-        fprintf('Waypoint %2d = %.3f m\n', ...
-            true_capture_wp_indices(i), true_capture_errors(i));
+    if haveLKF
+        fprintf('\nSteady-state covariance P (last step):\n'); disp(PL(:,:,end));
+        fprintf('Steady-state Kalman gain K (last step):\n');  disp(KL(:,:,end));
+        fprintf('Innovation variance (should be near R + H P H''):\n');
+        disp(var(innovL, 0, 1));
     end
 end
 
-fprintf('\nCross-Track (ground truth, finite segment)\n');
-fprintf('------------------------------------------\n');
-fprintf('TRUE RMS Cross-Track Error  = %.3f m\n', rms_cross_track_error);
-fprintf('TRUE Mean Cross-Track Error = %.3f m\n', mean_cross_track_error);
-fprintf('TRUE Maximum CT Error       = %.3f m\n', max_cross_track_error);
 fprintf('========================================\n');
 
 %% ---------------- One window, tabbed plots (IMPORTANT ones) ----------------
@@ -706,7 +711,9 @@ if opts.Save
 
     % Tabs: exportgraphics must be pointed at each TAB handle, because
     % exporting the figure would only capture the visible tab.
-    tabs = flipud(tg.Children(:));
+    % tg.Children is already in left-to-right tab order, so do not reverse
+    % it; flipping here numbers the saved images backwards.
+    tabs = tg.Children(:);
     for i = 1:numel(tabs)
         idx = idx + 1;
         export_one(tabs(i), tabs(i).Title, opts.SaveDir, opts.Prefix, idx);
@@ -724,7 +731,9 @@ if opts.Save
         close(hid);
     end
 
-    fprintf('Saved %d images to %s\n', idx, opts.SaveDir);
+    fprintf('\nSaved %d images to %s\n', idx, opts.SaveDir);
+    fprintf('  %d from the tabs on screen, %d report-only diagnostics.\n', ...
+        numel(tabs), idx - numel(tabs));
 end
 
 end
