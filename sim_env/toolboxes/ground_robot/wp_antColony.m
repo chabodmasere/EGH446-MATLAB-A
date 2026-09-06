@@ -1,24 +1,39 @@
-function [wp_ordered, dist_cum] = wp_antColony(wp_list, x0)
-    % constants
+function [wp_ordered, dist_cum, history] = wp_antColony(wp_list, x0, opt)
+%WP_ANTCOLONY  Order waypoints by ant colony optimisation.
+%
+%   [wp_ordered, dist_cum]          = wp_antColony(wp_list, x0)
+%   [wp_ordered, dist_cum, history] = wp_antColony(wp_list, x0, opt)
+%
+%   OPT optionally overrides any tuneable parameter; omitted fields fall back
+%   to the deployed defaults below. HISTORY is iterations-by-2: best-so-far
+%   and iteration-mean tour length.
+
     N = size(wp_list, 1);
 
-    % tuneability
-    iterations = 150;
-    ants = 20;
-    evaporation_coef = 0.15;
-    pheromone_retention = 1 - evaporation_coef;
-    Q = 20;
-    alpha = 1;
-    beta = 3;
-    pheromone_max = 10;
-    pheromone_min = pheromone_max/(2*N);
-    starting_pheramones = pheromone_max;
+    def = aco_defaults();
 
+    if nargin < 3 || isempty(opt), opt = struct(); end
+    fn = fieldnames(def);
+    for ii = 1:numel(fn)
+        if ~isfield(opt, fn{ii}), opt.(fn{ii}) = def.(fn{ii}); end
+    end
+
+    iterations          = opt.iterations;
+    ants                = opt.ants;
+    evaporation_coef    = opt.evaporation_coef;
+    pheromone_retention = 1 - evaporation_coef;
+    Q                   = opt.Q;
+    alpha               = opt.alpha;
+    beta                = opt.beta;
+    pheromone_max       = opt.pheromone_max;
+    pheromone_min       = pheromone_max/(2*N);
+    starting_pheramones = pheromone_max;
 
     best_dist = inf;
     best_path = zeros(N,2);
+    history   = zeros(iterations, 2);
 
-    path_pheramones = starting_pheramones* ones(N+1);   % matrix storage of "pheromone" levels
+    path_pheramones = starting_pheramones * ones(N+1);   % "pheromone" levels
 
     for i = 1:iterations % once finished highest pheromones is path
         ants_path = zeros(N*ants,2);
@@ -47,8 +62,10 @@ function [wp_ordered, dist_cum] = wp_antColony(wp_list, x0)
                     if ~unvisted_wps(m)
                         continue
                     end
-                    d_k = norm(wp_list(m,:) - xc);              % Nij, proximity to wp m
-                    tau = path_pheramones(index_xc, m+1);       % Tij, trail on this edge
+                    % eps floor: coincident points give d_k = 0, so (1/d_k)^beta
+                    % is Inf and the normalisation below yields NaN.
+                    d_k = max(norm(wp_list(m,:) - xc), eps);   % Nij, proximity to wp m
+                    tau = path_pheramones(index_xc, m+1);      % Tij, trail on this edge
                     probabilities(m) = tau^alpha * (1/d_k)^beta;
                 end
 
@@ -78,7 +95,7 @@ function [wp_ordered, dist_cum] = wp_antColony(wp_list, x0)
             end
         end
 
-        path_pheramones = pheromone_retention * path_pheramones; % scaled (1-p)*Tij(t)
+        path_pheramones = pheromone_retention * path_pheramones; % (1-p)*Tij(t)
 
         for j = 1:N*ants
             if mod(j,N) == 1
@@ -89,7 +106,7 @@ function [wp_ordered, dist_cum] = wp_antColony(wp_list, x0)
             index_n = ants_idx(j) + 1;
 
             ant_no  = ceil(j/N);
-            deposit = Q / ant_dists(ant_no); % tour length already accumulated above
+            deposit = Q / ant_dists(ant_no);
 
             path_pheramones(index_c,index_n) = path_pheramones(index_c,index_n) + deposit;
             path_pheramones(index_n,index_c) = path_pheramones(index_n,index_c) + deposit;
@@ -97,6 +114,7 @@ function [wp_ordered, dist_cum] = wp_antColony(wp_list, x0)
 
         path_pheramones = min(max(path_pheramones, pheromone_min), pheromone_max);
 
+        history(i,:) = [best_dist, mean(ant_dists)];
     end
 
     wp_ordered = best_path;
