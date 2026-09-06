@@ -1,36 +1,47 @@
-function mission_analysis(opts)
-% MISSION_ANALYSIS  Post-simulation controller / estimator analysis.
+function mission_analysis(src, opts)
+% MISSION_ANALYSIS  Post-simulation GNC + LKF estimation analysis.
 %
-% Designed to be called from the model StopFcn so results appear
-% immediately after the animation finishes:
+% Called from the model StopFcn so results appear right after the
+% animation finishes:
 %
 %   set_param('sl_groundvehicleDynamics', 'StopFcn', 'mission_analysis();')
 %
-% Because this is a FUNCTION (own workspace), all simulation data is
-% pulled from the base workspace with evalin(). Requires: logsout,
-% wp_plot, wp_ordered, omega_max, v_max, capture_radius.
+% IMPORTANT plots open as tabs in ONE window:
+%   1. Trajectory   - measured / true / estimated path vs planned route
+%   2. LKF vs Raw   - raw sensor error vs filtered error (why the LKF earns its place)
+%   3. Est Error    - x / y / theta estimation errors with RMSE
+%   4. Innovation   - innovation histograms vs N(0, var) (consistency check)
+%   5. Heading      - cmd vs est heading + wrapped tracking error
+%   6. Commands     - v_cmd / omega_cmd with actuator limits
+%   7. Guidance     - distance to waypoint + cross-track error
 %
-% All plots open in ONE window as tabs (uitabgroup):
-%   1. Trajectory      - XY path vs planned route and waypoints
-%   2. Heading         - cmd vs est heading + wrapped error
-%   3. Commands        - v_cmd / omega_cmd with actuator limits
-%   4. Estimator       - x / y / theta estimation errors
-%   5. Waypoint Dist   - distance to active waypoint + capture radius
-%   6. Cross-Track     - ground-truth finite-segment cross-track error
+% EVERYTHING (tabs + extra diagnostics) is saved as 300 DPI PNGs into an
+% "images" folder next to this file. The extra diagnostics (states vs k,
+% Kalman gains, covariance history, steady-state P heatmap) are rendered
+% invisibly, saved, and closed - they never clutter the screen.
+%
+% Because this is a FUNCTION (own workspace), simulation data is pulled
+% from the base workspace with evalin(). Requires: logsout, wp_plot,
+% wp_ordered, omega_max, v_max, capture_radius, and the To Workspace
+% logs pose_log, z_log, xhat_log, K_log, P_log, innov_log.
 %
 % Options:
-%   mission_analysis(Save=true)   export each tab as a 300 DPI PNG
+%   mission_analysis(Save=false)   show tabs only, save nothing
 
 arguments
-    opts.Save    (1,1) logical = false
-    opts.SaveDir (1,:) char = fullfile(fileparts(mfilename('fullpath')), 'figures')
+    src = []                       % optional Simulink.SimulationOutput
+    opts.dt      (1,1) double  = 0.01
+    opts.Save    (1,1) logical = true
+    opts.SaveDir (1,:) char = fullfile(fileparts(mfilename('fullpath')), 'images')
     opts.Prefix  (1,:) char = 'mission'
 end
 
-tag = 'mission_analysis';
+tag    = 'mission_analysis';
+hidtag = 'mission_analysis_saved_only';
 close(findobj('Type', 'figure', 'Tag', tag));
+close(findobj('Type', 'figure', 'Tag', hidtag));
 
-%% ---------------- Pull simulation data from base workspace ----------------
+%% ---------------- Pull GNC data from base workspace ----------------
 try
     logsout = evalin('base', 'logsout');
 catch
@@ -44,7 +55,7 @@ omega_max      = evalin('base', 'omega_max');
 v_max          = evalin('base', 'v_max');
 capture_radius = evalin('base', 'capture_radius');
 
-%% ---------------- Extract logged signals ----------------
+%% ---------------- Extract logged GNC signals ----------------
 getsig = @(name) logsout.getElement(name).Values;
 
 theta_cmd     = getsig('theta_cmd');
@@ -96,6 +107,47 @@ if size(x_hat_data,2) < 3
     error('x_hat does not contain enough states. Expected at least [x, y, theta].');
 end
 
+%% ---------------- Load LKF diagnostic logs (To Workspace) ----------------
+% pose_log / z_log / xhat_log / K_log / P_log / innov_log. If they are
+% missing, the GNC analysis still runs; the estimation tabs are skipped.
+haveLKF = true;
+try
+    names = {'pose_log','z_log','xhat_log','K_log','P_log','innov_log'};
+    S = load_signals(src, names);
+
+    [xhatL,  t_x] = grab(S.xhat_log,  opts.dt);
+    [poseL,  t_p] = grab(S.pose_log,  opts.dt);
+    [zL,     t_z] = grab(S.z_log,     opts.dt);
+    [innovL, t_i] = grab(S.innov_log, opts.dt);
+    [KL,     t_K] = grab3(S.K_log,    opts.dt);
+    [PL,     t_P] = grab3(S.P_log,    opts.dt);
+
+    tL     = t_x(:);
+    poseL  = align(poseL,  t_p, tL);
+    zL     = align(zL,     t_z, tL);
+    innovL = align(innovL, t_i, tL);
+    KL     = align3(KL, t_K, tL);
+    PL     = align3(PL, t_P, tL);
+
+    NL = numel(tL);
+    kL = (1:NL)';
+
+    wrap = @(a) atan2(sin(a), cos(a));
+
+    errL           = poseL - xhatL(:,1:size(poseL,2));
+    errL(:,3)      = wrap(errL(:,3));
+    meas_errL      = poseL - zL(:,1:3);
+    meas_errL(:,3) = wrap(meas_errL(:,3));
+
+    rmse_est  = sqrt(mean(errL.^2));
+    rmse_meas = sqrt(mean(meas_errL.^2));
+catch ME
+    haveLKF = false;
+    warning('mission_analysis:noLKFLogs', ...
+        'LKF logs not found (%s). Skipping estimation diagnostics.', ...
+        ME.message);
+end
+
 %% ---------------- Mission performance ----------------
 mission_time = dist_to_wp_time(end);
 route_length = sum(vecnorm(diff(wp_plot), 2, 2));
@@ -136,7 +188,7 @@ true_heading_error_rms      = sqrt(mean(true_heading_error_deg.^2));
 true_heading_error_mean_abs = mean(abs(true_heading_error_deg));
 true_heading_error_max_abs  = max(abs(true_heading_error_deg));
 
-%% ---------------- Estimator accuracy ----------------
+%% ---------------- Estimator accuracy (x_hat vs ground truth) ----------------
 valid_est_time = pose_true_time >= x_hat_time(1) & ...
                  pose_true_time <= x_hat_time(end);
 
@@ -317,6 +369,20 @@ fprintf('Effective Mission Speed     = %.3f m/s\n', mission_effective_speed);
 fprintf('Waypoints Captured          = %d/%d\n', ...
     num_true_waypoints_captured, size(wp_ordered,1));
 
+if haveLKF
+    fprintf('\nLKF vs Raw Sensor (RMSE)\n');
+    fprintf('------------------------\n');
+    fprintf('              x         y        theta\n');
+    fprintf('RMSE raw    %8.4f  %8.4f  %8.4f\n', rmse_meas);
+    fprintf('RMSE LKF    %8.4f  %8.4f  %8.4f\n', rmse_est(1:3));
+    fprintf('Improvement %8.2fx %8.2fx %8.2fx\n', ...
+        rmse_meas ./ rmse_est(1:3));
+    fprintf('\nSteady-state covariance P (last step):\n'); disp(PL(:,:,end));
+    fprintf('Steady-state Kalman gain K (last step):\n');  disp(KL(:,:,end));
+    fprintf('Innovation variance (should be near R + H P H''):\n');
+    disp(var(innovL));
+end
+
 fprintf('\nHeading Tracking (controller, uses x_hat)\n');
 fprintf('-----------------------------------------\n');
 fprintf('RMS Heading Error           = %.3f deg\n', heading_error_rms);
@@ -369,11 +435,7 @@ fprintf('TRUE Mean Cross-Track Error = %.3f m\n', mean_cross_track_error);
 fprintf('TRUE Maximum CT Error       = %.3f m\n', max_cross_track_error);
 fprintf('========================================\n');
 
-%% ---------------- One window, tabbed plots ----------------
-% uitabgroup puts a tab strip inside a single figure window; every set
-% of axes is parented to a tab instead of the figure, so all plots live
-% in one organised window.
-
+%% ---------------- One window, tabbed plots (IMPORTANT ones) ----------------
 fig = figure( ...
     'Name', 'EGH446 Mission Analysis', ...
     'Tag', tag, ...
@@ -391,11 +453,16 @@ fig = figure( ...
 
 tg = uitabgroup(fig);
 
-%% Tab 1: XY trajectory vs waypoints
+%% Tab 1: XY trajectory (measured / true / estimated / planned route)
 tab = uitab(tg, 'Title', 'Trajectory', 'BackgroundColor', 'w');
 ax = axes(tab);
-plot(ax, true_x, true_y, 'b-'); hold(ax, 'on');
-plot(ax, x_hat_data(:,1), x_hat_data(:,2), 'g--');
+if haveLKF
+    plot(ax, zL(:,1), zL(:,2), '.', ...
+        'Color', [0.75 0.75 0.75], 'MarkerSize', 4);
+    hold(ax, 'on');
+end
+plot(ax, true_x, true_y, 'r-'); hold(ax, 'on');
+plot(ax, x_hat_data(:,1), x_hat_data(:,2), 'b--');
 plot(ax, wp_plot(:,1), wp_plot(:,2), 'k:', 'LineWidth', 1.2);
 plot(ax, wp_ordered(:,1), wp_ordered(:,2), 'rp', ...
     'MarkerSize', 14, 'MarkerFaceColor', 'r');
@@ -404,10 +471,92 @@ plot(ax, true_x(1), true_y(1), 'ks', ...
 axis(ax, 'equal'); grid(ax, 'on');
 xlabel(ax, 'X (m)'); ylabel(ax, 'Y (m)');
 title(ax, 'Vehicle Trajectory vs Planned Route');
-legend(ax, 'true path', 'estimated path', 'planned route', ...
-    'waypoints', 'start', 'Location', 'best');
+if haveLKF
+    legend(ax, 'measured', 'true path', 'estimated path', ...
+        'planned route', 'waypoints', 'start', 'Location', 'best');
+else
+    legend(ax, 'true path', 'estimated path', 'planned route', ...
+        'waypoints', 'start', 'Location', 'best');
+end
 
-%% Tab 2: Heading tracking + wrapped error
+%% Tab 2: LKF vs raw sensor (why the filter earns its place)
+if haveLKF
+    tab = uitab(tg, 'Title', 'LKF vs Raw', 'BackgroundColor', 'w');
+    tl = tiledlayout(tab, 2, 1);
+
+    ax = nexttile(tl);
+    plot(ax, kL, meas_errL(:,1), '-', 'Color', [0.7 0.7 0.7], ...
+        'LineWidth', 1.2);
+    hold(ax, 'on');
+    plot(ax, kL, errL(:,1), 'b-');
+    grid(ax, 'on');
+    ylabel(ax, 'x error (m)');
+    title(ax, sprintf( ...
+        'Raw measurement error (grey) vs LKF error (blue), %.2fx better', ...
+        rmse_meas(1)/rmse_est(1)));
+
+    ax = nexttile(tl);
+    plot(ax, kL, meas_errL(:,3), '-', 'Color', [0.7 0.7 0.7], ...
+        'LineWidth', 1.2);
+    hold(ax, 'on');
+    plot(ax, kL, errL(:,3), 'b-');
+    grid(ax, 'on');
+    xlabel(ax, 'k'); ylabel(ax, '\theta error (rad)');
+    title(ax, sprintf('Heading: raw vs LKF, %.2fx better', ...
+        rmse_meas(3)/rmse_est(3)));
+end
+
+%% Tab 3: Estimation errors
+if ~isempty(t_est_valid)
+    tab = uitab(tg, 'Title', 'Est Error', 'BackgroundColor', 'w');
+    tl = tiledlayout(tab, 3, 1);
+
+    ax = nexttile(tl);
+    plot(ax, t_est_valid, x_est_error);
+    grid(ax, 'on');
+    ylabel(ax, 'X Error (m)');
+    title(ax, sprintf('LKF X-Position Error (RMSE = %.3f m)', ...
+        estimator_rmse_x));
+
+    ax = nexttile(tl);
+    plot(ax, t_est_valid, y_est_error);
+    grid(ax, 'on');
+    ylabel(ax, 'Y Error (m)');
+    title(ax, sprintf('LKF Y-Position Error (RMSE = %.3f m)', ...
+        estimator_rmse_y));
+
+    ax = nexttile(tl);
+    plot(ax, t_est_valid, rad2deg(theta_est_error));
+    grid(ax, 'on');
+    xlabel(ax, 'Time (s)'); ylabel(ax, 'Heading Error (deg)');
+    title(ax, sprintf('LKF Heading Error (RMSE = %.3f deg)', ...
+        estimator_rmse_heading));
+end
+
+%% Tab 4: Innovation histograms (consistency evidence)
+if haveLKF
+    tab = uitab(tg, 'Title', 'Innovation', 'BackgroundColor', 'w');
+    tl = tiledlayout(tab, 2, 2);
+    inames = {'x', 'y', '\theta', 'v'};
+    nInn = min(4, size(innovL, 2));
+
+    for i = 1:nInn
+        ax = nexttile(tl);
+        histogram(ax, innovL(:,i), 40, 'Normalization', 'pdf', ...
+            'FaceColor', [0.6 0.7 0.9]);
+        hold(ax, 'on');
+        s  = std(innovL(:,i));
+        xx = linspace(min(innovL(:,i)), max(innovL(:,i)), 200);
+        plot(ax, xx, exp(-xx.^2/(2*s^2))/(s*sqrt(2*pi)), 'r-', ...
+            'LineWidth', 1.8);
+        grid(ax, 'on');
+        title(ax, sprintf('innovation %s: var = %.4f', inames{i}, s^2));
+    end
+    title(tl, 'Innovations z_k - Hx_k should be zero-mean Gaussian', ...
+        'FontWeight', 'bold');
+end
+
+%% Tab 5: Heading tracking + wrapped error
 tab = uitab(tg, 'Title', 'Heading', 'BackgroundColor', 'w');
 tl = tiledlayout(tab, 2, 1);
 
@@ -426,7 +575,7 @@ xlabel(ax, 'Time (s)'); ylabel(ax, 'Error (deg)');
 title(ax, sprintf('Wrapped Heading Tracking Error (RMS = %.2f deg)', ...
     heading_error_rms));
 
-%% Tab 3: Controller commands with actuator limits
+%% Tab 6: Controller commands with actuator limits
 tab = uitab(tg, 'Title', 'Commands', 'BackgroundColor', 'w');
 tl = tiledlayout(tab, 2, 1);
 
@@ -446,80 +595,247 @@ xlabel(ax, 'Time (s)'); ylabel(ax, '\omega_{cmd} (rad/s)');
 title(ax, sprintf('Yaw Rate Command (saturated %.1f%% of mission)', ...
     yaw_saturation_percent));
 
-%% Tab 4: Estimator errors
-if ~isempty(t_est_valid)
-    tab = uitab(tg, 'Title', 'Estimator', 'BackgroundColor', 'w');
-    tl = tiledlayout(tab, 3, 1);
+%% Tab 7: Guidance (distance to waypoint + cross-track)
+tab = uitab(tg, 'Title', 'Guidance', 'BackgroundColor', 'w');
+tl = tiledlayout(tab, 2, 1);
 
-    ax = nexttile(tl);
-    plot(ax, t_est_valid, x_est_error);
-    grid(ax, 'on');
-    ylabel(ax, 'X Error (m)');
-    title(ax, sprintf('Kalman X-Position Error (RMSE = %.3f m)', ...
-        estimator_rmse_x));
-
-    ax = nexttile(tl);
-    plot(ax, t_est_valid, y_est_error);
-    grid(ax, 'on');
-    ylabel(ax, 'Y Error (m)');
-    title(ax, sprintf('Kalman Y-Position Error (RMSE = %.3f m)', ...
-        estimator_rmse_y));
-
-    ax = nexttile(tl);
-    plot(ax, t_est_valid, rad2deg(theta_est_error));
-    grid(ax, 'on');
-    xlabel(ax, 'Time (s)'); ylabel(ax, 'Heading Error (deg)');
-    title(ax, sprintf('Kalman Heading Error (RMSE = %.3f deg)', ...
-        estimator_rmse_heading));
-end
-
-%% Tab 5: Distance to active waypoint
-tab = uitab(tg, 'Title', 'Waypoint Dist', 'BackgroundColor', 'w');
-ax = axes(tab);
+ax = nexttile(tl);
 plot(ax, dist_to_wp_time, dist_to_wp_data); hold(ax, 'on');
 yline(ax, capture_radius, 'r--', 'capture radius', 'LineWidth', 1.6);
 grid(ax, 'on');
-xlabel(ax, 'Time (s)'); ylabel(ax, 'Distance (m)');
+ylabel(ax, 'Distance (m)');
 title(ax, 'Estimated Distance to Active Waypoint');
 
-%% Tab 6: Cross-track error
-tab = uitab(tg, 'Title', 'Cross-Track', 'BackgroundColor', 'w');
-ax = axes(tab);
+ax = nexttile(tl);
 plot(ax, pose_true_time(valid_ct), cross_track_valid);
 grid(ax, 'on');
-xlabel(ax, 'Time (s)'); ylabel(ax, 'Distance to Active Path Segment (m)');
+xlabel(ax, 'Time (s)'); ylabel(ax, 'Cross-Track (m)');
 title(ax, sprintf( ...
     'Ground-Truth Cross-Track Error (RMS = %.3f m, max = %.3f m)', ...
     rms_cross_track_error, max_cross_track_error));
 
 drawnow;
 
-%% ---------------- Save ----------------
-% exportgraphics is pointed at each TAB handle: exporting the figure
-% would only capture whichever tab is currently visible.
+%% ---------------- Saved-only diagnostics (invisible -> images/) ----------------
+% These are report material, not every-run material: rendered with
+% Visible off, exported, then closed. They never appear on screen.
+if opts.Save && haveLKF
+
+    kz = min(300, NL);
+    nS = size(PL, 1);
+    slabels = {'x','y','\theta','v','\omega','a_x','a_y'};
+    slabels = slabels(1:min(nS, numel(slabels)));
+
+    hidfig = @(name) figure('Name', name, 'Tag', hidtag, ...
+        'Visible', 'off', 'Color', 'w', ...
+        'Units', 'pixels', 'Position', [80 80 1150 720], ...
+        'DefaultAxesFontName', 'Arial', ...
+        'DefaultAxesFontSize', 12, ...
+        'DefaultAxesFontWeight', 'bold', ...
+        'DefaultAxesLineWidth', 1.4, ...
+        'DefaultLineLineWidth', 1.6);
+
+    % A. State estimates vs k
+    hidfig('State estimates vs k');
+    wrap = @(a) atan2(sin(a), cos(a));
+    pose_p = poseL; z_p = zL;
+    pose_p(:,3) = wrap(pose_p(:,3)); z_p(:,3) = wrap(z_p(:,3));
+    labels = {'x (m)', 'y (m)', '\theta (rad, wrapped)'};
+    for i = 1:3
+        subplot(3,1,i);
+        plot(kL, z_p(:,i), '.', 'Color', [0.7 0.7 0.7], 'MarkerSize', 3);
+        hold on;
+        plot(kL, pose_p(:,i), 'r-', 'LineWidth', 1.4);
+        plot(kL, xhatL(:,i), 'b-', 'LineWidth', 1.0);
+        ylabel(labels{i}); grid on;
+        if i == 1
+            title('Measured data, true state (red) and LKF estimate (blue)');
+        end
+        if i == 3, xlabel('k'); end
+    end
+    legend('measured', 'true', 'estimate', 'Location', 'best');
+
+    % B. Kalman gains
+    hidfig('Kalman gain');
+    nG = min(size(KL,1), size(KL,2));
+    subplot(2,1,1);
+    hold on;
+    for i = 1:nG
+        plot(kL, squeeze(KL(i,i,:)));
+    end
+    grid on; ylabel('gain');
+    title('Diagonal Kalman gains, full run: converge to steady state');
+    legend(slabels(1:nG), 'Location', 'best');
+    subplot(2,1,2);
+    hold on;
+    for i = 1:nG
+        plot(kL(1:kz), squeeze(KL(i,i,1:kz)));
+    end
+    grid on; xlabel('k'); ylabel('gain');
+    title(sprintf('Same gains, first %d steps: large while P is large', kz));
+
+    % C. Covariance history
+    hidfig('Error covariance');
+    Pd = zeros(NL, nS);
+    for i = 1:nS, Pd(:,i) = squeeze(PL(i,i,:)); end
+    subplot(2,1,1);
+    semilogy(kL, Pd); grid on; ylabel('P_{ii}');
+    title('Diagonal of P, full run: filter''s own variance per state');
+    legend(slabels, 'Location', 'best');
+    subplot(2,1,2);
+    semilogy(kL(1:kz), Pd(1:kz,:)); grid on;
+    xlabel('k'); ylabel('P_{ii}');
+    title(sprintf('First %d steps: uncertainty collapses to steady state', kz));
+
+    % D. Steady-state covariance heatmap
+    hidfig('Steady-state covariance');
+    imagesc(PL(:,:,end)); colorbar; axis square;
+    set(gca, 'XTick', 1:nS, 'YTick', 1:nS, ...
+        'XTickLabel', slabels, 'YTickLabel', slabels);
+    title('Full-state covariance matrix P at final step');
+end
+
+%% ---------------- Save everything to the images folder ----------------
 if opts.Save
-    save_tabs(tg, opts.SaveDir, opts.Prefix);
-end
 
-end
-
-%% ---------------- Helper ----------------
-function save_tabs(tabgroup, folder, prefix)
-% Save every tab of the analysis window as a 300 DPI PNG.
-
-    if ~exist(folder, 'dir')
-        mkdir(folder);
+    if ~exist(opts.SaveDir, 'dir')
+        mkdir(opts.SaveDir);
     end
 
-    tabs = tabgroup.Children;
+    idx = 0;
 
+    % Tabs: exportgraphics must be pointed at each TAB handle, because
+    % exporting the figure would only capture the visible tab.
+    tabs = flipud(tg.Children(:));
     for i = 1:numel(tabs)
-        name = regexprep(lower(tabs(i).Title), '[^a-z0-9]+', '_');
-        file = fullfile(folder, sprintf('%s_%02d_%s.png', prefix, i, name));
-
-        exportgraphics(tabs(i), file, ...
-            'Resolution', 300, 'BackgroundColor', 'white');
+        idx = idx + 1;
+        export_one(tabs(i), tabs(i).Title, opts.SaveDir, opts.Prefix, idx);
     end
 
-    fprintf('Saved %d tabs to %s\n', numel(tabs), folder);
+    % Saved-only diagnostics, then close them.
+    hid = findobj('Type', 'figure', 'Tag', hidtag);
+    if ~isempty(hid)
+        [~, order] = sort([hid.Number]);
+        hid = hid(order);
+        for i = 1:numel(hid)
+            idx = idx + 1;
+            export_one(hid(i), hid(i).Name, opts.SaveDir, opts.Prefix, idx);
+        end
+        close(hid);
+    end
+
+    fprintf('Saved %d images to %s\n', idx, opts.SaveDir);
+end
+
+end
+
+%% =====================================================================
+%% helpers
+%% =====================================================================
+function export_one(h, name, folder, prefix, idx)
+% Export one tab or figure handle as a 300 DPI PNG.
+    name = regexprep(lower(name), '[^a-z0-9]+', '_');
+    file = fullfile(folder, sprintf('%s_%02d_%s.png', prefix, idx, name));
+    exportgraphics(h, file, 'Resolution', 300, 'BackgroundColor', 'white');
+end
+
+function S = load_signals(src, names)
+% Collect logged variables into struct S. src may be a
+% Simulink.SimulationOutput, a struct with those fields, or [].
+% If []: look in the base workspace for the loose variables, or for any
+% SimulationOutput object holding them.
+    if isempty(src)
+        if evalin('base', 'exist(''xhat_log'',''var'')')
+            for i = 1:numel(names)
+                S.(names{i}) = evalin('base', names{i});
+            end
+            return;
+        end
+        vars = evalin('base', 'whos');
+        for iv = 1:numel(vars)
+            if strcmp(vars(iv).class, 'Simulink.SimulationOutput')
+                cand = evalin('base', vars(iv).name);
+                try
+                    S = load_signals(cand, names);
+                    return;
+                catch
+                end
+            end
+        end
+        error('No LKF logs (xhat_log etc.) found in base workspace.');
+    end
+
+    for i = 1:numel(names)
+        if isa(src, 'Simulink.SimulationOutput')
+            if ~any(strcmp(src.who, names{i}))
+                error('Sim output has no ''%s''.', names{i});
+            end
+            S.(names{i}) = src.get(names{i});
+        elseif isstruct(src) && isfield(src, names{i})
+            S.(names{i}) = src.(names{i});
+        else
+            error('Input has no ''%s''.', names{i});
+        end
+    end
+end
+
+function [A, tv] = grab(v, dt)
+% N x n array and N x 1 time vector from a To Workspace variable.
+    if isa(v, 'timeseries')
+        A  = squeeze(v.Data);
+        tv = v.Time(:);
+        if size(A,1) ~= numel(tv), A = A'; end
+    elseif isstruct(v) && isfield(v, 'signals')
+        A  = v.signals.values;
+        if isfield(v, 'time') && ~isempty(v.time)
+            tv = v.time(:);
+        else
+            tv = (0:size(A,1)-1)' * dt;
+        end
+    else
+        A  = v;
+        tv = (0:size(A,1)-1)' * dt;
+    end
+end
+
+function [A, tv] = grab3(v, dt)
+% n x m x N array and N x 1 time vector for a matrix signal.
+    if isa(v, 'timeseries')
+        A  = v.Data;
+        tv = v.Time(:);
+    elseif isstruct(v) && isfield(v, 'signals')
+        A  = v.signals.values;
+        if isfield(v, 'time') && ~isempty(v.time)
+            tv = v.time(:);
+        else
+            tv = (0:size(A,3)-1)' * dt;
+        end
+    else
+        A  = v;
+        tv = (0:size(A,3)-1)' * dt;
+    end
+    if ndims(A) ~= 3
+        error('K_log / P_log must be logged as a matrix signal (n x m x N).');
+    end
+end
+
+function B = align(A, tA, t)
+% Resample rows of A (sampled at tA) onto time grid t. Nearest-sample hold.
+    if numel(tA) == numel(t) && max(abs(tA(:) - t(:))) < 1e-9
+        B = A; return;
+    end
+    [tA, iu] = unique(tA(:), 'stable');
+    A = A(iu, :);
+    B = interp1(tA, A, t, 'previous', 'extrap');
+end
+
+function B = align3(A, tA, t)
+% Same as align, for n x m x N arrays.
+    if numel(tA) == numel(t) && max(abs(tA(:) - t(:))) < 1e-9
+        B = A; return;
+    end
+    [n, m, ~] = size(A);
+    flat = reshape(A, n*m, []).';
+    flat = align(flat, tA, t);
+    B = reshape(flat.', n, m, []);
 end
