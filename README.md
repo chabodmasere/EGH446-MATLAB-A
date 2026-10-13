@@ -113,9 +113,15 @@ sim_env/
     └── MRTB/                  MathWorks Mobile Robotics Simulation Toolbox
 ```
 
-## Authors
+## Contributions
 
-Chabod Masere, Jonah Menzies and Balin Carkeet (Group 50), Queensland University of Technology.
+Group 50, Queensland University of Technology. Each member owned one subsystem and wrote an individual report on it.
+
+| Member | Subsystem | Work |
+| --- | --- | --- |
+| Chabod Masere | State estimation | Linear Kalman filter design and tuning (initial EKF reworked into the 7-state LKF), innovation-consistency checks, and the `mission_analysis` post-run analysis and figures |
+| Jonah Menzies | Waypoint generation and optimisation | Repository and environment setup, waypoint generation, ant colony optimiser and its N10/N20 parameter tuning, integration of the ordering into the model, and the operating manual |
+| Balin Carkeet | Guidance and control | Heading and speed controller, RVWP guidance and capture-radius logic, controller tuning, randomised start pose, and the final results summary |
 
 The simulation environment is provided by the EGH446 teaching team and builds on the
 [Mobile Robotics Simulation Toolbox](https://github.com/mathworks-robotics/mobile-robotics-simulation-toolbox) (The MathWorks, Inc.).
